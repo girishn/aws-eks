@@ -5,12 +5,6 @@ provider "aws" {
   region = var.region
 }
 
-#provider "kubernetes" {
-# host                   = aws_eks_cluster.this.endpoint
-# cluster_ca_certificate = base64decode(aws_eks_cluster.this.certificate_authority[0].data)
-# token                  = data.aws_eks_cluster_auth.this.token
-#}
-
 data "aws_vpc" "default" {
   default = true
 }
@@ -26,6 +20,9 @@ data "aws_subnets" "default" {
     values = ["us-east-1a", "us-east-1b", "us-east-1c"]  # Only supported AZs
   }
 }
+
+# Data source to get the current AWS account ID
+data "aws_caller_identity" "current" {}
 
 resource "aws_iam_role" "eks_cluster_role" {
   name = "eksClusterRole"
@@ -102,6 +99,11 @@ data "aws_eks_cluster_auth" "this" {
   name = var.cluster_name
 }
 
+# OIDC Provider for EKS cluster (equivalent to: eksctl utils associate-iam-oidc-provider)
+data "tls_certificate" "cluster" {
+  url = aws_eks_cluster.this.identity[0].oidc[0].issuer
+}
+
 resource "aws_eks_node_group" "this" {
   cluster_name    = aws_eks_cluster.this.name
   node_group_name = "default-node-group"
@@ -159,23 +161,12 @@ resource "aws_iam_role_policy_attachment" "ebs_csi_attach" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
 }
 
-#resource "kubernetes_service_account" "ebs_csi_controller" {
-#  metadata {
-#    name      = "ebs-csi-controller-sa"
-#    namespace = "kube-system"
-#
-#    annotations = {
-#      "eks.amazonaws.com/role-arn" = aws_iam_role.ebs_csi.arn
-#    }
-#  }
-#  
-#  lifecycle {
-#    ignore_changes = [
-#      metadata[0].annotations,
-#    ]
-#  }
-#}
-
+# Kubernetes provider configuration
+provider "kubernetes" {
+  host                   = data.aws_eks_cluster.cluster.endpoint
+  cluster_ca_certificate = base64decode(data.aws_eks_cluster.cluster.certificate_authority[0].data)
+  token                  = data.aws_eks_cluster_auth.cluster.token
+}
 
 # --------------------------
 # EKS Managed Add-ons
@@ -185,6 +176,7 @@ resource "aws_eks_addon" "ebs_csi" {
   addon_name   = "aws-ebs-csi-driver"
   tags         = var.default_tags
   depends_on               = [aws_eks_node_group.this, aws_iam_role_policy_attachment.ebs_csi_attach]
+  service_account_role_arn = aws_iam_role.ebs_csi.arn
 }
 
 resource "aws_eks_addon" "coredns" {
@@ -292,4 +284,12 @@ output "cluster_certificate" {
 output "filtered_subnet_ids" {
   value = data.aws_subnets.default.ids
 }
+
+
+# Outputs
+output "ebs_csi_driver_role_arn" {
+  description = "ARN of the EBS CSI Driver IAM role"
+  value       = aws_iam_role.ebs_csi.arn
+}
+
 

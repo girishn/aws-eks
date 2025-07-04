@@ -1,0 +1,151 @@
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: kafka-storage
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: ebs.csi.aws.com
+reclaimPolicy: Retain
+allowVolumeExpansion: true
+volumeBindingMode: WaitForFirstConsumer
+parameters:
+  type: gp3
+  encrypted: "true"
+--- 
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: zookeeper-storage
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: ebs.csi.aws.com
+reclaimPolicy: Retain
+allowVolumeExpansion: true
+volumeBindingMode: WaitForFirstConsumer
+parameters:
+  type: gp3
+  encrypted: "true"
+---
+apiVersion: platform.confluent.io/v1beta1
+kind: Zookeeper
+metadata:
+  name: zookeeper
+  namespace: confluent
+spec:
+  replicas: 1
+  image:
+    application: confluentinc/cp-zookeeper:7.9.0
+    init: confluentinc/confluent-init-container:2.11.0
+  dataVolumeCapacity: 2Gi
+  logVolumeCapacity: 2Gi
+---
+apiVersion: platform.confluent.io/v1beta1
+kind: Kafka
+metadata:
+  name: kafka
+  namespace: confluent
+spec:
+  replicas: 3
+  image:
+    application: confluentinc/cp-server:7.9.0
+    init: confluentinc/confluent-init-container:2.11.0
+  dataVolumeCapacity: 2Gi
+  listeners:
+    external:
+      externalAccess:
+        type: loadBalancer
+        loadBalancer:
+          domain: local.domain
+---
+apiVersion: platform.confluent.io/v1beta1
+kind: Connect
+metadata:
+  name: connect
+  namespace: confluent
+spec:
+  replicas: 1
+  image:
+    application: confluentinc/cp-server-connect:7.9.0
+    init: confluentinc/confluent-init-container:2.11.0
+  dependencies:
+    kafka:
+      bootstrapEndpoint: kafka:9071
+  mountedVolumes:
+    volumes:
+    - name: docdb-truststore-volume
+      secret:
+        secretName: docdb-truststore-secret
+    volumeMounts:
+    - name: docdb-truststore-volume
+      mountPath: /mnt/truststore
+      readOnly: true
+  build:
+    type: onDemand
+    onDemand:
+      plugins:
+        locationType: confluentHub
+        confluentHub:
+        - name: kafka-connect-datagen
+          owner: confluentinc
+          version: 0.5.2
+        - name: kafka-connect-mongodb
+          owner: mongodb
+          version: 1.16.0
+---
+apiVersion: platform.confluent.io/v1beta1
+kind: ControlCenter
+metadata:
+  name: controlcenter
+  namespace: confluent
+spec:
+  replicas: 1
+  image:
+    application: confluentinc/cp-enterprise-control-center:7.9.0
+    init: confluentinc/confluent-init-container:2.11.0
+  dataVolumeCapacity: 2Gi
+  dependencies:
+    kafka:
+      bootstrapEndpoint: kafka:9071
+    schemaRegistry:
+      url: http://schemaregistry.confluent.svc.cluster.local:8081
+    ksqldb:
+    - name: ksqldb
+      url: http://ksqldb.confluent.svc.cluster.local:8088
+    connect:
+    - name: connect
+      url: http://connect.confluent.svc.cluster.local:8083
+  externalAccess:
+    type: loadBalancer
+    loadBalancer:
+      domain: local.domain
+---
+apiVersion: platform.confluent.io/v1beta1
+kind: SchemaRegistry
+metadata:
+  name: schemaregistry
+  namespace: confluent
+spec:
+  replicas: 1
+  image:
+    application: confluentinc/cp-schema-registry:7.9.0
+    init: confluentinc/confluent-init-container:2.11.0
+  dependencies:
+    kafka:
+      bootstrapEndpoint: kafka:9071
+---
+apiVersion: platform.confluent.io/v1beta1
+kind: KsqlDB
+metadata:
+  name: ksqldb
+  namespace: confluent
+spec:
+  replicas: 1
+  image:
+    application: confluentinc/cp-ksqldb-server:7.9.0
+    init: confluentinc/confluent-init-container:2.11.0
+  dataVolumeCapacity: 2Gi
+  dependencies:
+    kafka:
+      bootstrapEndpoint: kafka:9071
+---
